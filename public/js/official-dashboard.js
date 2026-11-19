@@ -1,7 +1,13 @@
 // Official Dashboard JavaScript
-const API_URL = 'https://grievance-portal-api.onrender.com/api';
+const API_URL = '/api';
 let allOfficialComplaints = [];
 let categoryChart, trendChart, resolutionChart;
+
+function escapeHtml(value) {
+    const element = document.createElement('span');
+    element.textContent = String(value ?? '');
+    return element.innerHTML;
+}
 
 // --- SESSION TIMEOUT MANAGEMENT ---
 const SESSION_TIMEOUT = 15 * 60 * 1000; // 15 minutes in milliseconds
@@ -27,7 +33,7 @@ function resetSessionTimer() {
 function showSessionWarning() {
     const warning = document.createElement('div');
     warning.className = 'warning-notification';
-    warning.innerHTML = '⚠️ Your session will expire in 2 minutes. Click here to stay logged in.';
+    warning.innerHTML = '⚠️ Your session will expire in 2 minutes. Click here to continue.';
     warning.style.position = 'fixed';
     warning.style.top = '20px';
     warning.style.left = '20px';
@@ -39,9 +45,15 @@ function showSessionWarning() {
     warning.style.zIndex = '2000';
     warning.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
     
-    warning.addEventListener('click', () => {
-        resetSessionTimer();
-        warning.remove();
+    warning.addEventListener('click', async () => {
+        try {
+            const response = await fetch(`${API_URL}/refresh`, { method: 'POST', credentials: 'same-origin' });
+            if (!response.ok) throw new Error('Your session has expired.');
+            resetSessionTimer();
+            warning.remove();
+        } catch (error) {
+            await logout();
+        }
     });
     
     document.body.appendChild(warning);
@@ -51,40 +63,45 @@ function showSessionWarning() {
 }
 
 function handleSessionTimeout() {
-    localStorage.removeItem('user');
     alert('⏱️ Your session has expired. Please login again.');
-    window.location.href = 'index.html';
+    logout();
 }
 
 // Initialize session timeout tracking
-if (localStorage.getItem('user')) {
+if (sessionStorage.getItem('user')) {
     resetSessionTimer();
     
-    // Track user activity
-    document.addEventListener('mousemove', resetSessionTimer);
-    document.addEventListener('keypress', resetSessionTimer);
-    document.addEventListener('click', resetSessionTimer);
-    document.addEventListener('scroll', resetSessionTimer);
 }
 
 // Initialize dashboard on page load
 document.addEventListener('DOMContentLoaded', function() {
-    const user = JSON.parse(localStorage.getItem('user'));
-    if (!user || user.role !== 'official') {
-        window.location.href = 'index.html';
-    }
-    loadOfficialDashboard();
+    fetch(`${API_URL}/me`, { credentials: 'same-origin' })
+        .then(response => {
+            if (!response.ok) throw new Error('Login required');
+            return response.json();
+        })
+        .then(({ user }) => {
+            if (user.role !== 'official') throw new Error('Official access required');
+            sessionStorage.setItem('user', JSON.stringify(user));
+            loadOfficialDashboard();
+        })
+        .catch(() => {
+            sessionStorage.removeItem('user');
+            window.location.href = 'index.html';
+        });
 });
 
 async function loadOfficialDashboard() {
     try {
         // Load all complaints
-        const compRes = await fetch(`${API_URL}/complaints/all`);
+        const compRes = await fetch(`${API_URL}/complaints/all`, { credentials: 'same-origin' });
+        if (!compRes.ok) throw new Error(`Complaints API error: ${compRes.status}`);
         const complaints = await compRes.json();
         allOfficialComplaints = complaints;
         
         // Load stats
-        const statsRes = await fetch(`${API_URL}/stats/all`);
+        const statsRes = await fetch(`${API_URL}/stats/all`, { credentials: 'same-origin' });
+        if (!statsRes.ok) throw new Error(`Statistics API error: ${statsRes.status}`);
         const stats = await statsRes.json();
         
         document.getElementById('totalComplaints').innerText = stats.total !== undefined ? stats.total : '0';
@@ -98,7 +115,8 @@ async function loadOfficialDashboard() {
         updateMetrics(allOfficialComplaints);
     } catch (error) {
         console.error('Error loading official dashboard:', error);
-        loadMockOfficialData();
+        const list = document.getElementById('officialComplaintsList');
+        if (list) list.textContent = 'Unable to load complaints. Please refresh and try again.';
     }
 }
 
@@ -138,25 +156,25 @@ function displayOfficialComplaints(complaints) {
     }
     
     list.innerHTML = complaints.map((c, idx) => {
-        const statusClass = c.status ? c.status.replace(' ', '\\ ') : 'Pending';
+        const statusClass = ['Pending', 'In Progress', 'Resolved'].includes(c.status) ? c.status : 'Pending';
         return `
         <div class="official-complaint-item">
             <div class="complaint-header-official">
                 <div class="complaint-id-official">GRV-2026-${String(idx + 1).padStart(3, '0')}</div>
                 <div class="complaint-badges-official">
-                    <span class="status-badge-official ${statusClass}">${c.status || 'Pending'}</span>
+                    <span class="status-badge-official ${escapeHtml(statusClass)}">${escapeHtml(c.status || 'Pending')}</span>
                 </div>
             </div>
-            <div class="complaint-title-official">${c.title}</div>
-            <div class="complaint-category-official">${c.category}</div>
+            <div class="complaint-title-official">${escapeHtml(c.title)}</div>
+            <div class="complaint-category-official">${escapeHtml(c.category)}</div>
             <div class="complaint-footer-official">
                 <div class="footer-item">
                     <span class="footer-label">Citizen</span>
-                    <span class="footer-value">${c.citizen || 'Not specified'}</span>
+                    <span class="footer-value">${escapeHtml(c.citizen || 'Not specified')}</span>
                 </div>
                 <div class="footer-item">
                     <span class="footer-label">Assigned</span>
-                    <span class="footer-value">${c.assigned || 'Unassigned'}</span>
+                    <span class="footer-value">${escapeHtml(c.assigned || 'Unassigned')}</span>
                 </div>
                 <div class="footer-item">
                     <span class="footer-label">Filed Date</span>
@@ -572,6 +590,7 @@ async function updateComplaint() {
     try {
         const response = await fetch(`${API_URL}/complaints/${id}`, {
             method: 'PUT',
+            credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json'
             },
@@ -593,7 +612,12 @@ async function updateComplaint() {
     }
 }
 
-function logout() {
-    localStorage.removeItem('user');
+async function logout() {
+    try {
+        await fetch(`${API_URL}/logout`, { method: 'POST', credentials: 'same-origin' });
+    } catch (error) {
+        console.error('Logout request failed:', error);
+    }
+    sessionStorage.removeItem('user');
     window.location.href = 'index.html';
 }

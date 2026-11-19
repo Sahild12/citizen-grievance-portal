@@ -1,51 +1,49 @@
+require('dotenv').config();
+
 const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
 const path = require('path');
 const mongoose = require('mongoose');
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json({ limit: '100kb' }));
+app.use(cookieParser());
 
-// Serve public assets (CSS, JS, images)
-app.use(express.static(path.join(__dirname, '../public')));
+const publicDirectory = path.join(__dirname, '../public');
+const webDirectory = path.join(__dirname, '..');
+app.use(express.static(publicDirectory, { dotfiles: 'deny' }));
+app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(webDirectory, 'index.html')));
+app.get('/dashboard.html', (req, res) => res.sendFile(path.join(webDirectory, 'dashboard.html')));
+app.get('/official-dashboard.html', (req, res) => res.sendFile(path.join(webDirectory, 'official-dashboard.html')));
 
-// Serve HTML pages
-app.use(express.static(path.join(__dirname, '../')));
-
-// ==================== MONGODB CONNECTION ====================
-const MONGODB_URI = process.env.MONGODB_URI;
-
-async function connectToDatabase() {
-    if (!MONGODB_URI) {
-        console.error('? MongoDB connection failed: set the MONGODB_URI environment variable.');
-        process.exit(1);
-    }
-
-    const options = {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        serverSelectionTimeoutMS: 5000
-    };
-
-    try {
-        await mongoose.connect(MONGODB_URI, options);
-        console.log('? MongoDB Connected Successfully');
-        await initializeSampleData();
-    } catch (err) {
-        console.error('? MongoDB connection failed:', err.message);
-        process.exit(1);
-    }
-}
-
-connectToDatabase();
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false
+});
+const registerLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false
+});
+app.use('/api/login', loginLimiter);
+app.use('/api/register', registerLimiter);
 
 // ==================== MONGOOSE SCHEMAS ====================
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     idNumber: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
+    password: { type: String, required: true, select: false },
     email: { type: String },
     phone: { type: String },
     role: { type: String, enum: ['citizen', 'official'], required: true },
@@ -75,311 +73,383 @@ const complaintSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Complaint = mongoose.model('Complaint', complaintSchema);
 
-// ==================== INITIALIZE SAMPLE DATA ====================
-async function initializeSampleData() {
-    try {
-        // Check if users exist
-        const userCount = await User.countDocuments();
-        
-        if (userCount === 0) {
-            // Add default users
-            await User.insertMany([
-                {
-                    name: 'Raj',
-                    idNumber: '12345',
-                    password: 'password123',
-                    role: 'citizen',
-                    department: 'Public Works'
-                },
-                {
-                    name: 'Admin Officer',
-                    idNumber: '67890',
-                    password: 'admin123',
-                    role: 'official',
-                    department: 'Administration'
-                }
-            ]);
-            console.log('✓ Default users created');
+let connectionPromise;
+async function connectToDatabase() {
+    if (mongoose.connection.readyState === 1 && !connectionPromise) return;
+    if (!connectionPromise) {
+        const uri = process.env.MONGODB_URI;
+        if (!uri) throw new Error('MONGODB_URI is not configured.');
+
+        const initialId = process.env.INITIAL_OFFICIAL_ID;
+        const initialPassword = process.env.INITIAL_OFFICIAL_PASSWORD;
+        if (Boolean(initialId) !== Boolean(initialPassword)) {
+            throw new Error('Set both INITIAL_OFFICIAL_ID and INITIAL_OFFICIAL_PASSWORD, or neither.');
+        }
+        if (initialId && (initialId.trim().length < 5 || initialId.trim().length > 64)) {
+            throw new Error('INITIAL_OFFICIAL_ID must be between 5 and 64 characters.');
+        }
+        if (initialPassword && (initialPassword.length < 16 || Buffer.byteLength(initialPassword, 'utf8') > 72)) {
+            throw new Error('INITIAL_OFFICIAL_PASSWORD must be 16 or more characters and at most 72 UTF-8 bytes.');
         }
 
-        const complaintCount = await Complaint.countDocuments();
-        if (complaintCount === 0) {
-            // Add diverse sample complaints for charts
-            const now = new Date();
-            const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);
-            const twoMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 2, 10);
-            const threeMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 3, 5);
-
-            await Complaint.insertMany([
-                {
-                    citizenId: '12345',
-                    title: 'Pothole on Main Street',
-                    category: 'Roads',
-                    description: 'Large pothole causing traffic issues',
-                    location: 'Main Street, Downtown',
-                    priority: 'High',
-                    status: 'Resolved',
-                    department: 'Public Works',
-                    filedDate: threeMonthsAgo,
-                    resolvedDate: new Date(threeMonthsAgo.getTime() + 5 * 24 * 60 * 60 * 1000) // 5 days later
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Water Supply Issue',
-                    category: 'Water',
-                    description: 'No water supply since morning',
-                    location: 'Block A, Sector 5',
-                    priority: 'Critical',
-                    status: 'Resolved',
-                    department: 'Water Supply',
-                    filedDate: twoMonthsAgo,
-                    resolvedDate: new Date(twoMonthsAgo.getTime() + 2 * 24 * 60 * 60 * 1000) // 2 days later
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Garbage Not Collected',
-                    category: 'Sanitation',
-                    description: 'Garbage not collected for 3 days',
-                    location: 'Block C, Sector 8',
-                    priority: 'High',
-                    status: 'Pending',
-                    department: 'Sanitation Dept.',
-                    filedDate: lastMonth
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Street Light Not Working',
-                    category: 'Electricity',
-                    description: 'Street light on corner is not functioning',
-                    location: 'Park Avenue',
-                    priority: 'Medium',
-                    status: 'In Progress',
-                    department: 'Electricity Board',
-                    filedDate: lastMonth
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Broken Pavement',
-                    category: 'Roads',
-                    description: 'Pavement is broken near the school',
-                    location: 'School Road',
-                    priority: 'Medium',
-                    status: 'In Progress',
-                    department: 'Public Works',
-                    filedDate: now
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Drainage Overflow',
-                    category: 'Sanitation',
-                    description: 'Drainage is overflowing on the street',
-                    location: 'Market Area',
-                    priority: 'Critical',
-                    status: 'Pending',
-                    department: 'Sanitation Dept.',
-                    filedDate: now
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Low Voltage',
-                    category: 'Electricity',
-                    description: 'Experiencing very low voltage for two days',
-                    location: 'Residential Area East',
-                    priority: 'High',
-                    status: 'Resolved',
-                    department: 'Electricity Board',
-                    filedDate: twoMonthsAgo,
-                    resolvedDate: new Date(twoMonthsAgo.getTime() + 8 * 24 * 60 * 60 * 1000) // 8 days later
-                },
-                {
-                    citizenId: '12345',
-                    title: 'Pipe Leak',
-                    category: 'Water',
-                    description: 'Main water pipe is leaking',
-                    location: 'North Avenue',
-                    priority: 'Critical',
-                    status: 'Resolved',
-                    department: 'Water Supply',
-                    filedDate: threeMonthsAgo,
-                    resolvedDate: new Date(threeMonthsAgo.getTime() + 1 * 24 * 60 * 60 * 1000) // 1 day later
+        connectionPromise = mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 })
+            .then(async () => {
+                if (initialId && initialPassword) {
+                    const existingOfficial = await User.exists({ role: 'official' });
+                    if (!existingOfficial) {
+                        await User.create({
+                            name: 'Official Administrator',
+                            idNumber: initialId.trim(),
+                            password: await bcrypt.hash(initialPassword, 12),
+                            role: 'official',
+                            department: 'Administration'
+                        });
+                    }
                 }
-            ]);
-            console.log('✓ Sample complaints created');
-        }
-    } catch (error) {
-        console.error('Error initializing data:', error.message);
+            })
+            .catch((error) => {
+                connectionPromise = undefined;
+                throw error;
+            });
     }
+    await connectionPromise;
+}
+mongoose.connection.on('disconnected', () => {
+    connectionPromise = undefined;
+});
+
+app.use('/api', (req, res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+        const origin = req.get('origin');
+        const fetchSite = req.get('sec-fetch-site');
+        let sameOrigin = true;
+        if (origin) {
+            try {
+                sameOrigin = new URL(origin).host === req.get('host');
+            } catch {
+                sameOrigin = false;
+            }
+        }
+        if (fetchSite === 'cross-site' || !sameOrigin) {
+            return res.status(403).json({ success: false, message: 'Cross-origin request rejected.' });
+        }
+    }
+    next();
+});
+
+app.post('/api/logout', (req, res) => {
+    res.clearCookie('session', sessionCookie);
+    res.json({ success: true });
+});
+
+app.use('/api', async (req, res, next) => {
+    try {
+        await connectToDatabase();
+        next();
+    } catch (error) {
+        console.error('Database connection failed:', error.message);
+        res.status(503).json({ success: false, message: 'The service is temporarily unavailable.' });
+    }
+});
+
+const sessionCookie = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 15 * 60 * 1000
+};
+
+function publicUser(user) {
+    return {
+        _id: user._id,
+        name: user.name,
+        role: user.role,
+        department: user.department
+    };
 }
 
-// ==================== API ENDPOINTS ====================
+function createSession(user, res) {
+    const secret = process.env.AUTH_SECRET;
+    if (!secret || secret.length < 32) {
+        throw new Error('AUTH_SECRET must be set to a random value of at least 32 characters.');
+    }
+    const token = jwt.sign(
+        { role: user.role },
+        secret,
+        { subject: user._id.toString(), expiresIn: '15m', issuer: 'grievance-portal' }
+    );
+    res.cookie('session', token, sessionCookie);
+}
 
-// LOGIN ENDPOINT
+function requireAuth(requiredRole) {
+    return async (req, res, next) => {
+        try {
+            const secret = process.env.AUTH_SECRET;
+            if (!secret || secret.length < 32) {
+                return res.status(503).json({ success: false, message: 'Authentication is not configured.' });
+            }
+            const token = req.cookies.session;
+            if (!token) return res.status(401).json({ success: false, message: 'Please log in.' });
+
+            const payload = jwt.verify(token, secret, { issuer: 'grievance-portal' });
+            if (typeof payload.sub !== 'string' || !['citizen', 'official'].includes(payload.role)) {
+                res.clearCookie('session', sessionCookie);
+                return res.status(401).json({ success: false, message: 'Please log in again.' });
+            }
+            const user = await User.findById(payload.sub).select('name idNumber role department');
+            if (!user || user.role !== payload.role) {
+                res.clearCookie('session', sessionCookie);
+                return res.status(401).json({ success: false, message: 'Please log in again.' });
+            }
+            if (requiredRole && user.role !== requiredRole) {
+                return res.status(403).json({ success: false, message: 'You do not have permission.' });
+            }
+            req.user = user;
+            next();
+        } catch (error) {
+            if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+                res.clearCookie('session', sessionCookie);
+                return res.status(401).json({ success: false, message: 'Please log in again.' });
+            }
+            next(error);
+        }
+    };
+}
+
 app.post('/api/login', async (req, res) => {
     try {
-        const { idNumber, password, role } = req.body;
-        const user = await User.findOne({ idNumber, password, role });
-        
-        if (user) {
-            res.json({ 
-                success: true, 
-                user: {
-                    _id: user._id,
-                    name: user.name,
-                    idNumber: user.idNumber,
-                    role: user.role,
-                    department: user.department
-                }
-            });
-        } else {
-            res.json({ success: false, message: 'Invalid Credentials' });
+        const { idNumber, password, role } = req.body || {};
+        if (typeof idNumber !== 'string' || typeof password !== 'string' ||
+            password.length > 1024 || !['citizen', 'official'].includes(role)) {
+            return res.status(400).json({ success: false, message: 'Enter a valid ID, password, and account type.' });
         }
+
+        const user = await User.findOne({ idNumber: idNumber.trim(), role }).select('+password');
+        if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+
+        const isHashed = /^\$2[aby]\$/.test(user.password);
+        let passwordMatches;
+        if (isHashed) {
+            passwordMatches = await bcrypt.compare(password, user.password);
+        } else {
+            const provided = Buffer.from(password);
+            const stored = Buffer.from(user.password);
+            passwordMatches = provided.length === stored.length && crypto.timingSafeEqual(provided, stored);
+            if (passwordMatches) {
+                user.password = await bcrypt.hash(password, 12);
+                await user.save();
+            }
+        }
+        if (!passwordMatches) return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+
+        createSession(user, res);
+        res.json({ success: true, user: publicUser(user) });
     } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ success: false, message: error.message });
+        console.error('Login error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to log in right now.' });
     }
 });
 
-// REGISTER ENDPOINT (NEW)
 app.post('/api/register', async (req, res) => {
     try {
-        const { name, idNumber, email, phone, password, role } = req.body;
-        
-        // Check if user already exists
-        const existingUser = await User.findOne({ idNumber });
-        if (existingUser) {
-            return res.json({ success: false, message: 'User already registered' });
+        const { name, idNumber, email, phone, password } = req.body || {};
+        if (typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 100 ||
+            typeof idNumber !== 'string' || idNumber.trim().length < 5 || idNumber.trim().length > 64 ||
+            typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+            typeof phone !== 'string' || !/^\d{10}$/.test(phone.replace(/\D/g, '')) ||
+            typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
+            return res.status(400).json({
+                success: false,
+                message: 'Enter valid details. Passwords must be at least 12 characters.'
+            });
         }
-        
-        // Create new user
-        const newUser = new User({
-            name,
-            idNumber,
-            email,
-            phone,
-            password,
+
+        const user = await User.create({
+            name: name.trim(),
+            idNumber: idNumber.trim(),
+            email: email.trim().toLowerCase(),
+            phone: phone.trim(),
+            password: await bcrypt.hash(password, 12),
             role: 'citizen'
         });
-        
-        await newUser.save();
-        res.json({ 
-            success: true, 
-            message: 'Registration Successful',
-            user: newUser
-        });
+        res.status(201).json({ success: true, message: 'Registration successful.', user: publicUser(user) });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        if (error.code === 11000) {
+            return res.status(409).json({ success: false, message: 'This ID is already registered.' });
+        }
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({ success: false, message: 'Please check the information you entered.' });
+        }
+        console.error('Registration error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to register right now.' });
     }
 });
 
-// GET COMPLAINTS
-app.get('/api/complaints/:userId', async (req, res) => {
+app.get('/api/me', requireAuth(), (req, res) => {
+    res.json({ success: true, user: publicUser(req.user) });
+});
+
+app.post('/api/refresh', requireAuth(), (req, res) => {
     try {
-        let complaints;
-        
-        if (req.params.userId === 'all') {
-            complaints = await Complaint.find();
-        } else {
-            complaints = await Complaint.find({ citizenId: req.params.userId });
+        createSession(req.user, res);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Session refresh error:', error.message);
+        res.status(503).json({ success: false, message: 'Unable to refresh your session.' });
+    }
+});
+
+app.get('/api/complaints/:userId', requireAuth(), async (req, res) => {
+    try {
+        if (req.params.userId === 'all' && req.user.role !== 'official') {
+            return res.status(403).json({ success: false, message: 'You do not have permission.' });
         }
-        
+        const query = req.user.role === 'official'
+            ? (req.params.userId === 'all' ? {} : { citizenId: req.user._id.toString() })
+            : { citizenId: req.user._id.toString() };
+        const complaintQuery = Complaint.find(query);
+        if (req.user.role !== 'official') complaintQuery.select('-internalNotes');
+        const complaints = await complaintQuery;
         res.json(complaints);
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error('Complaint list error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to load complaints.' });
     }
 });
 
-// CREATE COMPLAINT
-app.post('/api/complaints', async (req, res) => {
+app.post('/api/complaints', requireAuth('citizen'), async (req, res) => {
     try {
-        const newComplaint = new Complaint({
-            ...req.body,
-            filedDate: new Date(),
-            status: 'Pending'
-        });
-        
-        await newComplaint.save();
-        console.log('✓ New complaint filed:', newComplaint._id);
-        res.json({ 
-            success: true, 
-            message: 'Complaint Filed Successfully', 
-            complaint: newComplaint 
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
-
-// UPDATE COMPLAINT
-app.put('/api/complaints/:id', async (req, res) => {
-    try {
-        const { status, assigned, priority, internalNotes } = req.body;
-        const updateData = {};
-        
-        if (status) updateData.status = status;
-        if (assigned) updateData.assigned = assigned;
-        if (priority) updateData.priority = priority;
-        if (internalNotes !== undefined) updateData.internalNotes = internalNotes;
-        
-        const complaint = await Complaint.findByIdAndUpdate(
-            req.params.id,
-            updateData,
-            { new: true }
-        );
-        
-        if (complaint) {
-            res.json({ success: true, complaint });
-        } else {
-            res.status(404).json({ success: false, message: 'Complaint not found' });
+        const { title, category, description, location, latitude, longitude, priority } = req.body;
+        const categories = ['Roads', 'Water', 'Electricity', 'Sanitation', 'Other'];
+        if (typeof title !== 'string' || title.trim().length < 5 || title.trim().length > 150 ||
+            !categories.includes(category) ||
+            typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 5000 ||
+            typeof location !== 'string' || location.trim().length < 2 || location.trim().length > 300 ||
+            !['Low', 'Medium', 'High', 'Critical'].includes(priority)) {
+            return res.status(400).json({ success: false, message: 'Please provide valid complaint details.' });
         }
+
+        const complaint = await Complaint.create({
+            citizenId: req.user._id.toString(),
+            title: title.trim(),
+            category,
+            description: description.trim(),
+            location: location.trim(),
+            latitude: Number.isFinite(latitude) ? latitude : undefined,
+            longitude: Number.isFinite(longitude) ? longitude : undefined,
+            priority,
+            status: 'Pending',
+            department: 'Public Works'
+        });
+        res.status(201).json({ success: true, message: 'Complaint filed successfully.', complaint });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error('Complaint create error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to file this complaint.' });
     }
 });
 
-// GET STATISTICS
-app.get('/api/stats/:userId', async (req, res) => {
+app.put('/api/complaints/:id', requireAuth('official'), async (req, res) => {
     try {
-        let query = {};
-        
-        if (req.params.userId !== 'all') {
-            query.citizenId = req.params.userId;
+        const { status, assigned, priority, internalNotes } = req.body || {};
+        const update = {};
+        if (status !== undefined) {
+            if (!['Pending', 'In Progress', 'Resolved'].includes(status)) {
+                return res.status(400).json({ success: false, message: 'Invalid complaint status.' });
+            }
+            update.status = status;
+            update.resolvedDate = status === 'Resolved' ? new Date() : undefined;
         }
-        
-        const userComplaints = await Complaint.find(query);
-        
-        const total = userComplaints.length;
-        const pending = userComplaints.filter(c => c.status === 'Pending').length;
-        const resolved = userComplaints.filter(c => c.status === 'Resolved').length;
-        const inProgress = userComplaints.filter(c => c.status === 'In Progress').length;
+        if (assigned !== undefined) {
+            if (typeof assigned !== 'string' || assigned.length > 100) {
+                return res.status(400).json({ success: false, message: 'Invalid assignee.' });
+            }
+            update.assigned = assigned;
+        }
+        if (priority !== undefined) {
+            if (!['Low', 'Medium', 'High', 'Critical'].includes(priority)) {
+                return res.status(400).json({ success: false, message: 'Invalid priority.' });
+            }
+            update.priority = priority;
+        }
+        if (internalNotes !== undefined) {
+            if (typeof internalNotes !== 'string' || internalNotes.length > 5000) {
+                return res.status(400).json({ success: false, message: 'Invalid internal notes.' });
+            }
+            update.internalNotes = internalNotes;
+        }
+        if (Object.keys(update).length === 0) {
+            return res.status(400).json({ success: false, message: 'No valid updates provided.' });
+        }
 
-        res.json({ total, pending, resolved, inProgress });
+        const complaint = await Complaint.findByIdAndUpdate(req.params.id, update, {
+            new: true,
+            runValidators: true
+        });
+        if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+        res.json({ success: true, complaint });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error('Complaint update error:', error.message);
+        res.status(400).json({ success: false, message: 'Unable to update this complaint.' });
     }
 });
 
-// GET ALL STATS (FOR OFFICIAL DASHBOARD)
-app.get('/api/stats/all', async (req, res) => {
+app.get('/api/stats/all', requireAuth('official'), async (req, res) => {
     try {
-        const complaints = await Complaint.find();
-        
-        const stats = {
+        const complaints = await Complaint.find().select('status');
+        res.json({
             total: complaints.length,
             pending: complaints.filter(c => c.status === 'Pending').length,
             resolved: complaints.filter(c => c.status === 'Resolved').length,
             inProgress: complaints.filter(c => c.status === 'In Progress').length,
             avgResolutionTime: '5.2d'
-        };
-        
-        res.json(stats);
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error('Statistics error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to load statistics.' });
     }
 });
 
-// START SERVER
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`✓ Server running on port ${PORT}`);
-    console.log('✓ Connected to MongoDB');
+app.get('/api/stats/:userId', requireAuth(), async (req, res) => {
+    try {
+        if (req.params.userId === 'all' && req.user.role !== 'official') {
+            return res.status(403).json({ success: false, message: 'You do not have permission.' });
+        }
+        const query = req.user.role === 'official' && req.params.userId === 'all'
+            ? {}
+            : { citizenId: req.user._id.toString() };
+        const complaints = await Complaint.find(query).select('status');
+        res.json({
+            total: complaints.length,
+            pending: complaints.filter(c => c.status === 'Pending').length,
+            resolved: complaints.filter(c => c.status === 'Resolved').length,
+            inProgress: complaints.filter(c => c.status === 'In Progress').length
+        });
+    } catch (error) {
+        console.error('Statistics error:', error.message);
+        res.status(500).json({ success: false, message: 'Unable to load statistics.' });
+    }
 });
+
+app.use('/api', (req, res) => {
+    res.status(404).json({ success: false, message: 'API route not found.' });
+});
+
+app.use((error, req, res, next) => {
+    if (res.headersSent) return next(error);
+    if (error.type === 'entity.parse.failed') {
+        return res.status(400).json({ success: false, message: 'Request must contain valid JSON.' });
+    }
+    if (error.type === 'entity.too.large') {
+        return res.status(413).json({ success: false, message: 'Request is too large.' });
+    }
+    console.error('Request error:', error.message);
+    res.status(500).json({ success: false, message: 'An unexpected error occurred.' });
+});
+
+if (require.main === module) {
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => console.log(`Grievance portal listening on port ${port}`));
+}
+
+module.exports = app;

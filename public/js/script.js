@@ -1,6 +1,12 @@
-const API_URL = 'https://grievance-portal-api.onrender.com/api';
+const API_URL = '/api';
 let selectedRole = 'citizen'; // Track selected role
 let allComplaints = []; // Store all complaints for filtering
+
+function escapeHtml(value) {
+    const element = document.createElement('span');
+    element.textContent = String(value ?? '');
+    return element.innerHTML;
+}
 
 // --- SESSION TIMEOUT MANAGEMENT ---
 const SESSION_TIMEOUT = 15 * 60 * 1000; // 15 minutes in milliseconds
@@ -26,7 +32,7 @@ function resetSessionTimer() {
 function showSessionWarning() {
     const warning = document.createElement('div');
     warning.className = 'warning-notification';
-    warning.innerHTML = '⚠️ Your session will expire in 2 minutes. Click here to stay logged in.';
+    warning.innerHTML = '⚠️ Your session will expire in 2 minutes. Click here to continue.';
     warning.style.position = 'fixed';
     warning.style.top = '20px';
     warning.style.left = '20px';
@@ -38,9 +44,15 @@ function showSessionWarning() {
     warning.style.zIndex = '2000';
     warning.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
     
-    warning.addEventListener('click', () => {
-        resetSessionTimer();
-        warning.remove();
+    warning.addEventListener('click', async () => {
+        try {
+            const response = await fetch(`${API_URL}/refresh`, { method: 'POST', credentials: 'same-origin' });
+            if (!response.ok) throw new Error('Your session has expired.');
+            resetSessionTimer();
+            warning.remove();
+        } catch (error) {
+            await logout();
+        }
     });
     
     document.body.appendChild(warning);
@@ -50,20 +62,14 @@ function showSessionWarning() {
 }
 
 function handleSessionTimeout() {
-    localStorage.removeItem('user');
     alert('⏱️ Your session has expired. Please login again.');
-    window.location.href = 'index.html';
+    logout();
 }
 
 // Initialize session timeout tracking on dashboard pages
-if (localStorage.getItem('user')) {
+if (sessionStorage.getItem('user')) {
     resetSessionTimer();
     
-    // Track user activity
-    document.addEventListener('mousemove', resetSessionTimer);
-    document.addEventListener('keypress', resetSessionTimer);
-    document.addEventListener('click', resetSessionTimer);
-    document.addEventListener('scroll', resetSessionTimer);
 }
 
 // --- MODAL MANAGEMENT ---
@@ -136,8 +142,8 @@ if (registerForm) {
             alert('❌ Phone number must be 10 digits');
             return;
         }
-        if (password.length < 8) {
-            alert('❌ Password must be at least 8 characters');
+        if (password.length < 12) {
+            alert('❌ Password must be at least 12 characters');
             return;
         }
         if (password !== confirmPassword) {
@@ -152,6 +158,7 @@ if (registerForm) {
         try {
             const res = await fetch(`${API_URL}/register`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     name: fullName,
@@ -244,11 +251,10 @@ if (loginForm) {
         const idNumber = document.getElementById('idInput').value;
         const password = document.getElementById('passwordInput').value;
         
-        console.log('Login attempt:', { idNumber, role: selectedRole });
-
         try {
             const res = await fetch(`${API_URL}/login`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ idNumber, password, role: selectedRole })
             });
@@ -258,11 +264,8 @@ if (loginForm) {
             }
             
             const data = await res.json();
-            console.log('Login response:', data);
-            
             if (data.success) {
-                console.log('Login successful for:', data.user.name);
-                localStorage.setItem('user', JSON.stringify(data.user));
+                sessionStorage.setItem('user', JSON.stringify(data.user));
                 // Route based on role
                 if (data.user.role === 'official') {
                     window.location.href = 'official-dashboard.html';
@@ -270,8 +273,7 @@ if (loginForm) {
                     window.location.href = 'dashboard.html';
                 }
             } else {
-                console.warn('Login failed:', data.message);
-                alert('❌ Login Failed - Invalid Credentials');
+                alert('❌ Login Failed - ' + (data.message || 'Invalid credentials'));
             }
         } catch (error) {
             console.error('Login error:', error);
@@ -282,14 +284,18 @@ if (loginForm) {
 
 // --- DASHBOARD LOGIC ---
 async function loadDashboard() {
-    const user = JSON.parse(localStorage.getItem('user'));
-    if (!user) {
+    let user;
+    try {
+        const authResponse = await fetch(`${API_URL}/me`, { credentials: 'same-origin' });
+        if (!authResponse.ok) throw new Error('Login required');
+        ({ user } = await authResponse.json());
+        sessionStorage.setItem('user', JSON.stringify(user));
+    } catch (error) {
+        sessionStorage.removeItem('user');
         window.location.href = 'index.html';
         return;
     }
 
-    console.log('Loading dashboard for user:', user.name);
-    
     // Update greeting
     const greeting = document.getElementById('userGreeting');
     if (greeting) {
@@ -298,31 +304,26 @@ async function loadDashboard() {
 
     try {
         // Load stats
-        console.log('Fetching stats from:', `${API_URL}/stats/${user._id}`);
-        const statsRes = await fetch(`${API_URL}/stats/${user._id}`);
+        const statsRes = await fetch(`${API_URL}/stats/${user._id}`, { credentials: 'same-origin' });
         
         if (!statsRes.ok) {
             throw new Error(`Stats API error: ${statsRes.status}`);
         }
         
         const stats = await statsRes.json();
-        console.log('Stats loaded:', stats);
-        
         document.getElementById('statTotal').innerText = stats.total;
         document.getElementById('statPending').innerText = stats.pending;
         document.getElementById('statInProgress').innerText = stats.inProgress;
         document.getElementById('statResolved').innerText = stats.resolved;
 
         // Load complaints
-        console.log('Fetching complaints from:', `${API_URL}/complaints/${user._id}`);
-        const compRes = await fetch(`${API_URL}/complaints/${user._id}`);
+        const compRes = await fetch(`${API_URL}/complaints/${user._id}`, { credentials: 'same-origin' });
         
         if (!compRes.ok) {
             throw new Error(`Complaints API error: ${compRes.status}`);
         }
         
         allComplaints = await compRes.json();
-        console.log('Complaints loaded:', allComplaints.length, 'complaints');
         displayComplaints(allComplaints);
     } catch (error) {
         console.error('Error loading dashboard:', error);
@@ -343,15 +344,15 @@ function displayComplaints(complaints) {
             <div class="complaint-item-header">
                 <div class="complaint-id">GRV-2026-${String(idx + 1).padStart(3, '0')}</div>
                 <div class="complaint-badges">
-                    <span class="status-badge ${c.status}">${c.status}</span>
-                    <span class="priority-badge ${c.priority}">${c.priority}</span>
+                    <span class="status-badge ${escapeHtml(c.status)}">${escapeHtml(c.status)}</span>
+                    <span class="priority-badge ${escapeHtml(c.priority)}">${escapeHtml(c.priority)}</span>
                 </div>
             </div>
-            <div class="complaint-title">${c.title}</div>
-            <div class="complaint-category">${c.category}</div>
+            <div class="complaint-title">${escapeHtml(c.title)}</div>
+            <div class="complaint-category">${escapeHtml(c.category)}</div>
             <div class="complaint-meta">
                 <div class="complaint-meta-item">
-                    <span><i class="ri-government-line"></i> Assigned to: ${c.department || 'Public Works Dept.'}</span>
+                    <span><i class="ri-government-line"></i> Assigned to: ${escapeHtml(c.department || 'Public Works Dept.')}</span>
                 </div>
                 <div class="complaint-meta-item">
                     <span> <i class="ri-calendar-line"></i> Filed: ${new Date(c.filedDate).toLocaleDateString('en-IN')}</span>
@@ -455,9 +456,7 @@ if (newComplaintForm) {
             return;
         }
         
-        console.log('Submitting new complaint...');
-        
-        const user = JSON.parse(localStorage.getItem('user'));
+        const user = JSON.parse(sessionStorage.getItem('user'));
         
         // Prepare file data
         const filesData = uploadedFiles.map(f => ({
@@ -481,11 +480,10 @@ if (newComplaintForm) {
             files: filesData
         };
         
-        console.log('Complaint data:', complaintData);
-
         try {
             const res = await fetch(`${API_URL}/complaints`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(complaintData)
             });
@@ -495,8 +493,6 @@ if (newComplaintForm) {
             }
             
             const result = await res.json();
-            console.log('Complaint submitted successfully:', result);
-            
             // Reset form and files
             newComplaintForm.reset();
             uploadedFiles = [];
@@ -507,7 +503,7 @@ if (newComplaintForm) {
             // Show success message
             const successMsg = document.createElement('div');
             successMsg.className = 'success-notification';
-            successMsg.innerHTML = '✅ Complaint submitted successfully! Your reference ID is: ' + result.complaint._id;
+            successMsg.textContent = '✅ Complaint submitted successfully! Your reference ID is: ' + result.complaint._id;
             document.body.appendChild(successMsg);
             setTimeout(() => successMsg.remove(), 5000);
             
@@ -517,7 +513,7 @@ if (newComplaintForm) {
             console.error('Error submitting complaint:', error);
             const errorMsg = document.createElement('div');
             errorMsg.className = 'error-notification';
-            errorMsg.innerHTML = '❌ Error submitting complaint: ' + error.message;
+            errorMsg.textContent = '❌ Error submitting complaint: ' + error.message;
             document.body.appendChild(errorMsg);
             setTimeout(() => errorMsg.remove(), 5000);
         }
@@ -677,7 +673,7 @@ function updateFilePreview() {
             const reader = new FileReader();
             reader.onload = (e) => {
                 div.innerHTML = `
-                    <img src="${e.target.result}" alt="${fileObj.name}">
+                    <img src="${e.target.result}" alt="${escapeHtml(fileObj.name)}">
                     <button class="remove-file" onclick="removeFile(${index})">×</button>
                 `;
             };
@@ -686,7 +682,7 @@ function updateFilePreview() {
             const icon = getFileIcon(fileObj.type);
             div.innerHTML = `
                 <div class="file-icon">${icon}</div>
-                <div class="file-name">${fileObj.name}</div>
+                <div class="file-name">${escapeHtml(fileObj.name)}</div>
                 <div class="file-size">${formatFileSize(fileObj.size)}</div>
                 <button class="remove-file" onclick="removeFile(${index})">×</button>
             `;
@@ -744,8 +740,8 @@ function showComplaintDetail(complaintId) {
                 <div class="attached-file-info">
                     <div class="attached-file-icon">${getFileIcon(f.type)}</div>
                     <div class="attached-file-details">
-                        <div class="attached-file-name">${f.name}</div>
-                        <div class="attached-file-size">${formatFileSize(f.size)}</div>
+                        <div class="attached-file-name">${escapeHtml(f.name)}</div>
+                        <div class="attached-file-size">${formatFileSize(Number(f.size) || 0)}</div>
                     </div>
                 </div>
             </div>
@@ -779,17 +775,22 @@ if (detailModal) {
     });
 }
 
-function logout() {
-    localStorage.removeItem('user');
+async function logout() {
+    try {
+        await fetch(`${API_URL}/logout`, { method: 'POST', credentials: 'same-origin' });
+    } catch (error) {
+        console.error('Logout request failed:', error);
+    }
+    sessionStorage.removeItem('user');
     window.location.href = 'index.html';
 }
 
 async function pollDashboard() {
-    const user = JSON.parse(localStorage.getItem('user'));
+    const user = JSON.parse(sessionStorage.getItem('user'));
     if (!user) return;
 
     try {
-        const statsRes = await fetch(`${API_URL}/stats/${user._id}`);
+        const statsRes = await fetch(`${API_URL}/stats/${user._id}`, { credentials: 'same-origin' });
         if (statsRes.ok) {
             const stats = await statsRes.json();
             document.getElementById('statTotal').innerText = stats.total;
@@ -798,7 +799,7 @@ async function pollDashboard() {
             document.getElementById('statResolved').innerText = stats.resolved;
         }
 
-        const compRes = await fetch(`${API_URL}/complaints/${user._id}`);
+        const compRes = await fetch(`${API_URL}/complaints/${user._id}`, { credentials: 'same-origin' });
         if (compRes.ok) {
             const newComplaints = await compRes.json();
             // Check if there are changes to avoid unnecessary re-rendering
