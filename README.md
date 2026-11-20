@@ -4,7 +4,7 @@ A modern and user-friendly web application designed to help citizens report civi
 
 This portal bridges the gap between the public and administration by offering a simple workflow for complaint submission, real-time status tracking, and department-based grievance handling.
 
-**Live Demo:** [https://jansevaa.netlify.app/](https://jansevaa.netlify.app/)
+**Live Demo:** [citizen-grievance-portal-chi.vercel.app](citizen-grievance-portal-chi.vercel.app)
 
 ## Project Overview
 
