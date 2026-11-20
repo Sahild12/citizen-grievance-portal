@@ -90,26 +90,23 @@ Make sure you have the following installed:
    npm install
    ```
 
-4. Start the application
-   ```bash
-   npm start
-   ```
-
-5. Open your browser and visit
-   ```bash
-   http://localhost:3000
-   ```
-
 ### Environment Configuration
 
-Set `MONGODB_URI` to the connection string provided by MongoDB Atlas before starting the server. In PowerShell:
+Create a `.env` file in the project directory (the same folder as `package.json`) and add your MongoDB connection string:
+
+```env
+MONGODB_URI=mongodb+srv://<db-user>:<password>@<cluster-host>/<database>?retryWrites=true&w=majority
+```
+
+In MongoDB Atlas, open your cluster and choose **Connect** > **Drivers** to get the connection string. Replace the placeholders with your database username, password, and cluster address. Ensure your current IP is allowed in Atlas Network Access.
+
+The server loads `.env` automatically, so start it from the project directory with:
 
 ```powershell
-$env:MONGODB_URI = 'mongodb+srv://<db-user>:<password>@<cluster-host>/<database>?retryWrites=true&w=majority'
 npm start
 ```
 
-Run these commands from the project directory. Keep the connection string private and do not commit it.
+Then open `http://localhost:3000`. Keep `.env` private; it is excluded from Git. Do not share or commit your database password.
 
 ## Screenshots
 

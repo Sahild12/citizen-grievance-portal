@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -29,17 +31,10 @@ async function connectToDatabase() {
         serverSelectionTimeoutMS: 5000
     };
 
-    try {
-        await mongoose.connect(MONGODB_URI, options);
-        console.log('? MongoDB Connected Successfully');
-        await initializeSampleData();
-    } catch (err) {
-        console.error('? MongoDB connection failed:', err.message);
-        process.exit(1);
-    }
+    await mongoose.connect(MONGODB_URI, options);
+    console.log('✓ MongoDB Connected Successfully');
+    await initializeSampleData();
 }
-
-connectToDatabase();
 
 // ==================== MONGOOSE SCHEMAS ====================
 const userSchema = new mongoose.Schema({
@@ -379,7 +374,13 @@ app.get('/api/stats/all', async (req, res) => {
 
 // START SERVER
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`✓ Server running on port ${PORT}`);
-    console.log('✓ Connected to MongoDB');
-});
+connectToDatabase()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`✓ Server running on port ${PORT}`);
+        });
+    })
+    .catch((err) => {
+        console.error('✗ MongoDB connection failed:', err.message);
+        process.exit(1);
+    });

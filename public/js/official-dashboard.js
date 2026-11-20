@@ -1,5 +1,7 @@
 // Official Dashboard JavaScript
-const API_URL = 'https://grievance-portal-api.onrender.com/api';
+const API_URL = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    ? `${window.location.origin}/api`
+    : 'https://grievance-portal-api.onrender.com/api';
 let allOfficialComplaints = [];
 let categoryChart, trendChart, resolutionChart;
 
