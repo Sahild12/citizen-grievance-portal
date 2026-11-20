@@ -108,6 +108,10 @@ npm start
 
 Then open `http://localhost:3000`. Keep `.env` private; it is excluded from Git. Do not share or commit your database password.
 
+### Deploying the frontend to Vercel
+
+Import this repository into Vercel with the repository root as the project root. The Vercel configuration builds the static site into `dist`; the frontend continues to use the API hosted at `https://grievance-portal-api.onrender.com/api`. Configure `MONGODB_URI` on the API hosting service, not in the static Vercel project.
+
 ## Screenshots
 
 This section is ready for your screenshots. Once you upload images, replace the placeholder blocks below with your final visuals.

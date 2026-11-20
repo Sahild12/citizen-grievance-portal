@@ -4,6 +4,7 @@
   "description": "A portal for citizens to submit grievances",
   "main": "server.js",
   "scripts": {
+    "build": "node scripts/build.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },
